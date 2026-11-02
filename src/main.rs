@@ -112,10 +112,6 @@ fn main() {
         )
         .init();
 
-    if update::apply_on_startup() {
-        return;
-    }
-
     telemetry::clock();
     // A first start sizes the app to the screen and the system's text size.
     let fresh = !settings::path().exists();
@@ -138,10 +134,6 @@ fn main() {
     };
     #[cfg(target_os = "macos")]
     core_bin::install_cli_link();
-    if core.is_ok() {
-        update::after_update();
-    }
-    update::start();
     telemetry::start(settings::telemetry_setting(&person));
     bench::start();
     if let Err(e) = mods::write_workspace() {
@@ -158,7 +150,7 @@ fn main() {
             settings::note_fonts(cx.text_system().all_font_names());
             settings::load_home_fonts(cx);
             mods::init(cx);
-            // Not restarted for it: the update goes in when the app quits.
+            // Save app state before quitting; updates apply only by explicit action.
             cx.on_app_quit(|cx| {
                 let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
                 // Where the window was, for the next start (a quit never asks the window).
@@ -173,7 +165,6 @@ fn main() {
                 }
                 mods::finish_shared();
                 telemetry::quit();
-                update::apply();
                 async {}
             })
             .detach();

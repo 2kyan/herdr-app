@@ -433,7 +433,7 @@ No arguments.
 
 ## `app.whats_new`
 
-Show what this release brought (it opens once by itself after an update).
+Show what this release brought (it opens automatically once after an update).
 
 No arguments.
 
@@ -462,13 +462,13 @@ Open the settings (section: look, alerts, updates).
 
 ## `app.check_updates`
 
-Look for a newer Herdr and herdr-core now.
+Manually check for newer Herdr and herdr-core releases. The check may download a Herdr update; it does not install it.
 
 No arguments.
 
 ## `app.update_core`
 
-Update herdr-core to its latest release of this generation; terminals keep running.
+Manually update herdr-core to its latest release of this generation; terminals keep running.
 
 No arguments.
 
@@ -506,7 +506,7 @@ No arguments.
 
 ## `app.update`
 
-Restart into the update Herdr downloaded (your terminals keep running).
+Restart into the update downloaded after you chose Check now (your terminals keep running).
 
 No arguments.
 

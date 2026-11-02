@@ -85,11 +85,11 @@ Ctrl+Shift+P shows every command and its key (Cmd+Shift+P on macOS). Change any 
 
 ## Updates and privacy
 
-Installed releases check for updates in the background and download a new app beside the running one. It takes over when you quit and reopen, or choose the update action. Your terminals keep running in the core.
-Settings → Updates shows what is available. What's New opens after an update; you can open it again from the command palette.
+Installed releases check for updates only when you choose Check now in Settings → Updates. A check may download a verified app update beside the running one; choose Restart to update to install it. Herdr never checks or installs updates in the background, and herdr-core is updated only when you choose its update action. Your terminals keep running in the core.
+What's New opens after an update; you can open it again from the command palette.
 Builds from source do not update themselves.
 
-Usage telemetry is on by default in releases. Turn it off in Settings → Privacy.
+Usage telemetry is off by default. Turn it on in Settings → Privacy if you want to opt in.
 Mods are trusted code, not sandboxed extensions. Read [security and privacy](docs/security.md) before installing someone else's mod.
 
 ## For agents

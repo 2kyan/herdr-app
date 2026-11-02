@@ -381,8 +381,8 @@ pub struct Person {
     /// The panels' font (their sizes follow zoom).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_font: Option<String>,
-    /// Anonymous usage data (telemetry.rs). On unless set to false.
-    #[serde(skip_serializing_if = "is_true")]
+    /// Anonymous usage data (telemetry.rs). Off unless explicitly enabled.
+    #[serde(skip_serializing_if = "is_false")]
     pub telemetry: bool,
     /// Allow terminal programs (including remote ones) to copy text locally.
     #[serde(skip_serializing_if = "is_true")]
@@ -437,6 +437,10 @@ fn is_true(b: &bool) -> bool {
     *b
 }
 
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
 impl Default for Person {
     fn default() -> Self {
         Person {
@@ -446,7 +450,7 @@ impl Default for Person {
             font: None,
             font_size: None,
             ui_font: None,
-            telemetry: true,
+            telemetry: false,
             clipboard_write: true,
             minimum_contrast: 1.0,
             option_as_alt: OptionAsAlt::Auto,
@@ -660,15 +664,11 @@ pub fn load_person() -> Result<Person, String> {
     Ok(person)
 }
 
-/// The value of settings.json's own `telemetry`, read even when the file has
-/// another problem: an explicit `false` always counts.
+/// Telemetry requires a successfully loaded settings file and explicit opt-in.
 pub fn telemetry_setting(person: &Result<Person, String>) -> bool {
     match person {
         Ok(p) => p.telemetry,
-        Err(_) => {
-            let raw = std::fs::read_to_string(path()).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
-            raw.and_then(|v| v.get("telemetry").and_then(serde_json::Value::as_bool)).unwrap_or(true)
-        }
+        Err(_) => false,
     }
 }
 
@@ -914,11 +914,26 @@ mod tests {
     /// settings.json key.
     #[test]
     fn the_guide_explains_every_setting() {
-        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), ui_font: Some(String::new()), telemetry: false, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), ..Person::default() };
+        let all = Person { core: Some(String::new()), font: Some(String::new()), font_size: Some(1.0), ui_font: Some(String::new()), telemetry: true, clipboard_write: false, appearance: Appearance::Light, theme: Some(crate::layout::ThemeChoice::One(String::new())), colors: [("text".into(), String::new())].into(), ..Person::default() };
         let keys: Vec<String> = serde_json::to_value(&all).unwrap().as_object().unwrap().keys().cloned().collect();
         let guide = include_str!("../defaults/AGENTS.md");
         let section = guide.split("## The person").nth(1).and_then(|s| s.split("\n## ").next()).unwrap_or_default();
         let missing: Vec<&String> = keys.iter().filter(|k| !section.contains(&format!("`{k}`"))).collect();
         assert!(missing.is_empty(), "defaults/AGENTS.md (## The person) doesn't explain: {missing:?}");
+    }
+
+    #[test]
+    fn telemetry_requires_explicit_opt_in_and_fails_closed() {
+        assert!(!Person::default().telemetry);
+        let missing: Person = serde_json::from_str("{}").unwrap();
+        assert!(!missing.telemetry);
+        assert!(!telemetry_setting(&Ok(Person::default())));
+        assert!(telemetry_setting(&Ok(Person { telemetry: true, ..Person::default() })));
+        assert!(!telemetry_setting(&Err("invalid settings".into())));
+
+        let default = serde_json::to_value(Person::default()).unwrap();
+        assert!(default.get("telemetry").is_none());
+        let opted_in = serde_json::to_value(Person { telemetry: true, ..Person::default() }).unwrap();
+        assert_eq!(opted_in["telemetry"], true);
     }
 }

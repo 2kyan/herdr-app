@@ -1,28 +1,20 @@
-//! The app's own updates. An installed app (Linux: `~/.local/share/herdr-app`,
-//! macOS: `Herdr.app`) checks `releases.herdr.dev/app/latest.json` a little
-//! after it opens and every hour, downloads a newer build for this
-//! machine, checks its sha256 and unpacks it next to itself (`<install>.new`).
-//! The frame then shows "Restart"; the swap happens on restart or the next
-//! quit, or before opening the next window after a crash. The first start
-//! after a swap runs `hc update` for the core.
+//! Updates are checked only when the person asks from Settings. A check may
+//! download a newer app build for this machine, checks its sha256 and unpacks
+//! it next to itself (`<install>.new`). The person chooses when to restart
+//! into it or update herdr-core; neither is applied automatically.
 //!
 //! A build from source never updates: only `scripts/package` (the release
 //! builds) sets `HERDR_APP_RELEASE`. `scripts/install-macos` makes a
 //! Herdr.app too, so the install's shape alone can't tell.
 //!
-//! The core is checked on the same clock (`core/latest.json`): a newer core
-//! of the same generation is offered (also applied after an app update), unless
-//! a package manager owns it. Within a generation a newer core only adds.
+//! An explicit check also looks at `core/latest.json`: a newer core of the
+//! same generation is offered unless a package manager owns it. Within a
+//! generation a newer core only adds.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Condvar, Mutex};
-use std::time::Duration;
-
-const EVERY: Duration = Duration::from_secs(60 * 60);
-/// After a failed check or download (offline, a damaged file).
-const RETRY: Duration = Duration::from_secs(30 * 60);
+use std::sync::Mutex;
 
 /// Where this app is installed: the folder (Linux) or bundle (macOS) an
 /// update replaces. Read once: after a swap this process's own file is gone.
@@ -94,10 +86,7 @@ pub struct CoreInfo {
 static CORE: Mutex<CoreInfo> = Mutex::new(CoreInfo { version: None, managed: None, ready: None, updating: false, error: None });
 /// When the last check succeeded (unix seconds); a failed check clears it.
 static CHECKED: Mutex<Option<u64>> = Mutex::new(None);
-/// "Check now" wakes the checker early.
-static WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
-/// The checker runs (a release, or pointed at a test server), and is looking right now.
-static RUNNING: AtomicBool = AtomicBool::new(false);
+/// A manually requested check is currently in progress.
 static CHECKING: AtomicBool = AtomicBool::new(false);
 
 pub fn core() -> CoreInfo {
@@ -132,66 +121,43 @@ pub fn status() -> serde_json::Value {
         "notes": crate::update_notes::notes(ready().as_deref()),
         "core": core(),
         "checked": *CHECKED.lock().unwrap(),
-        "checks": RUNNING.load(Ordering::Relaxed),
+        "checks": checks_app().is_some() || checks_core(),
         "checking": CHECKING.load(Ordering::Relaxed),
     })
 }
 
 pub fn check_now() {
-    if RUNNING.load(Ordering::Relaxed) {
-        CHECKING.store(true, Ordering::Relaxed);
-    }
-    *WAKE.0.lock().unwrap() = true;
-    WAKE.1.notify_all();
-}
-
-fn sleep(d: Duration) {
-    let woken = WAKE.0.lock().unwrap();
-    let (mut woken, _) = WAKE.1.wait_timeout_while(woken, d, |w| !*w).unwrap();
-    *woken = false;
-}
-
-/// Starts checking in the background: the app if it's an installed release, the core too.
-pub fn start() {
     let app = checks_app();
     let core = checks_core();
     if app.is_none() && !core {
-        tracing::info!("a build from source: no updates");
         return;
     }
-    RUNNING.store(true, Ordering::Relaxed);
-    CHECKING.store(true, Ordering::Relaxed);
+    if CHECKING.swap(true, Ordering::AcqRel) {
+        return;
+    }
     std::thread::spawn(move || {
-        sleep(Duration::from_secs(10));
-        loop {
-            CHECKING.store(true, Ordering::Relaxed);
-            let mut wait = EVERY;
-            let mut succeeded = true;
-            if let Some(root) = &app {
-                match check(root) {
-                    Ok(found) => {
-                        if found.is_some() {
-                            *READY.lock().unwrap() = found;
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("update check: {e}");
-                        crate::telemetry::count("app_update_failed");
-                        wait = RETRY;
-                        succeeded = false;
+        let mut succeeded = true;
+        if let Some(root) = &app {
+            match check(root) {
+                Ok(found) => {
+                    if found.is_some() {
+                        *READY.lock().unwrap() = found;
                     }
                 }
+                Err(e) => {
+                    tracing::warn!("update check: {e}");
+                    crate::telemetry::count("app_update_failed");
+                    succeeded = false;
+                }
             }
-            if core && let Err(e) = check_core() {
-                tracing::warn!("core update check: {e}");
-                wait = RETRY;
-                succeeded = false;
-            }
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-            *CHECKED.lock().unwrap() = checked_at(succeeded, now);
-            CHECKING.store(false, Ordering::Relaxed);
-            sleep(wait);
         }
+        if core && let Err(e) = check_core() {
+            tracing::warn!("core update check: {e}");
+            succeeded = false;
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        *CHECKED.lock().unwrap() = checked_at(succeeded, now);
+        CHECKING.store(false, Ordering::Release);
     });
 }
 
@@ -224,16 +190,6 @@ struct CoreRelease {
 fn latest_core() -> Result<CoreRelease, String> {
     let text = curl_text(&format!("{}/core/latest.json", releases()))?;
     serde_json::from_str(&text).map_err(|e| format!("core/latest.json: {e}"))
-}
-
-fn after_update_target<'a>(have: &str, latest: Option<&'a CoreRelease>, generation: u64, core_min: &'a str) -> Option<&'a str> {
-    if newer("0.1.5", have) {
-        return None;
-    }
-    Some(match latest {
-        Some(latest) if latest.generation == Some(generation) && newer(&latest.version, have) => &latest.version,
-        _ => core_min,
-    })
 }
 
 /// `hc update` (terminals keep running; the app reconnects when the core restarts).
@@ -436,39 +392,10 @@ fn staged_version(root: &Path) -> Option<String> {
     Some(version)
 }
 
-fn startup_target<'a>(running: &str, staged: Option<&'a str>, relaunched: Option<&str>) -> Option<&'a str> {
-    if relaunched.is_some() {
-        return None;
-    }
-    staged.filter(|version| newer(version, running))
-}
-
-/// Recover a staged hotfix even when the previous window never quit cleanly.
-/// The inherited expected version allows only one automatic relaunch.
-pub fn apply_on_startup() -> bool {
-    let expected = std::env::var("HERDR_APP_UPDATE_EXPECTED").ok();
-    if let Some(expected) = &expected {
-        // SAFETY: startup runs before any app threads. Do not leak the guard
-        // into the core's environment and every terminal it later starts.
-        unsafe { std::env::remove_var("HERDR_APP_UPDATE_EXPECTED") };
-        if expected != env!("CARGO_PKG_VERSION") {
-            tracing::warn!("update: relaunched as {}, expected {expected}; not retrying", env!("CARGO_PKG_VERSION"));
-        }
-        return false;
-    }
-    let Some(root) = checks_app() else { return false };
-    let staged = staged_version(&root);
-    let Some(version) = startup_target(env!("CARGO_PKG_VERSION"), staged.as_deref(), expected.as_deref()) else { return false };
-    if !swap(&root) {
-        return false;
-    }
-    relaunch_expected(Some(version))
-}
-
 /// Puts the downloaded version in place of this one. The running app keeps
 /// its files open, so it can go on until it quits. True if it swapped.
-/// Windows lets a running program's folder be renamed, not deleted: the old
-/// one goes on the next start (`after_update`).
+/// Windows lets a running program's folder be renamed, not deleted; the old
+/// one is left beside it for the person to remove.
 pub fn apply() -> bool {
     let Some(root) = root() else { return false };
     let staged = staged_version(&root);
@@ -495,25 +422,20 @@ fn swap(root: &Path) -> bool {
     }
     let _ = std::fs::remove_file(beside(root, ".new.json"));
     *READY.lock().unwrap() = None;
-    let _ = std::fs::write(marker(), "");
     true
 }
 
 /// Opens the app again once this process has exited (after `apply`).
 pub fn relaunch() {
-    relaunch_expected(None);
+    relaunch_after_quit();
 }
 
 #[cfg(windows)]
-fn relaunch_expected(expected: Option<&str>) -> bool {
+fn relaunch_after_quit() -> bool {
     let Some(root) = root() else { return false };
     let exe = exe_in(&root).to_string_lossy().replace('\'', "''");
     let script = format!("Wait-Process -Id {} -ErrorAction SilentlyContinue; Start-Process '{exe}'", std::process::id());
-    let mut command = crate::spawn::command("powershell");
-    if let Some(expected) = expected {
-        command.env("HERDR_APP_UPDATE_EXPECTED", expected);
-    }
-    let spawned = command
+    let spawned = crate::spawn::command("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -530,11 +452,10 @@ fn relaunch_expected(expected: Option<&str>) -> bool {
 
 /// Opens the app again once this process has exited (after `apply`).
 #[cfg(unix)]
-fn relaunch_expected(expected: Option<&str>) -> bool {
+fn relaunch_after_quit() -> bool {
     let Some(root) = root() else { return false };
-    // LaunchServices need not preserve the startup guard or an isolated home.
     let open = if cfg!(target_os = "macos") {
-        if expected.is_some() { "exec \"$1/Contents/MacOS/Herdr\"" } else { "open \"$1\"" }
+        "open \"$1\""
     } else {
         "exec \"$1/herdr-app\""
     };
@@ -542,9 +463,6 @@ fn relaunch_expected(expected: Option<&str>) -> bool {
     let spawned = {
         use std::os::unix::process::CommandExt;
         let mut command = Command::new("sh");
-        if let Some(expected) = expected {
-            command.env("HERDR_APP_UPDATE_EXPECTED", expected);
-        }
         command
             .arg("-c")
             .arg(script)
@@ -565,45 +483,6 @@ fn relaunch_expected(expected: Option<&str>) -> bool {
     }
 }
 
-/// Left by `apply`: the next start brings the core up to date too.
-fn marker() -> PathBuf {
-    crate::mods::app_dir().join(".updated")
-}
-
-/// The first start after an app update brings the core to the latest release
-/// of this app's generation (`hc update --version`, terminals kept). If the
-/// release check fails or offers another generation, keep the minimum pin.
-/// Cores before 0.1.5 lack `--version`: they keep their same-generation update
-/// path. A core a package manager owns is left alone (hc says so).
-pub fn after_update() {
-    if std::fs::remove_file(marker()).is_err() {
-        return;
-    }
-    std::thread::spawn(|| {
-        let have = crate::core_bin::version(&crate::core_bin::path()).unwrap_or_default();
-        CORE.lock().unwrap().updating = true;
-        let latest = latest_core().map_err(|e| tracing::warn!("core release check after app update: {e}")).ok();
-        let target = after_update_target(have.trim_start_matches("hc "), latest.as_ref(), crate::hc::GENERATION, crate::hc::core_min());
-        let result = crate::core_bin::update_to(target);
-        let mut core = CORE.lock().unwrap();
-        core.updating = false;
-        match result {
-            Ok(now) => {
-                if let Some(root) = root() {
-                    let _ = std::fs::remove_dir_all(beside(&root, ".old"));
-                }
-                tracing::info!("herdr-core is {now}");
-                core.version = Some(now.trim_start_matches("hc ").to_owned());
-                core.error = None;
-            }
-            Err(e) => {
-                tracing::warn!("herdr-core update: {e}");
-                core.error = Some(e);
-            }
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,6 +491,7 @@ mod tests {
     fn failed_check_clears_success_and_recovery_records_a_new_time() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
+        use std::time::Duration;
 
         // An isolated release server drops the first connection, then recovers.
         // No environment changes, app window, core, or installed files are involved.
@@ -646,17 +526,6 @@ mod tests {
         checked = checked_at(recovered.is_ok(), 300);
         assert_eq!(checked, Some(300));
         server.join().unwrap();
-    }
-
-    #[test]
-    fn startup_applies_only_a_newer_version_and_never_relaunches_twice() {
-        assert_eq!(startup_target("0.1.7", Some("0.1.8"), None), Some("0.1.8"));
-        for staged in [None, Some("0.1.6"), Some("0.1.7")] {
-            assert_eq!(startup_target("0.1.7", staged, None), None);
-        }
-        for expected in ["0.1.7", "0.1.8", "0.1.9"] {
-            assert_eq!(startup_target("0.1.7", Some("0.1.8"), Some(expected)), None);
-        }
     }
 
     #[cfg(unix)]
@@ -775,23 +644,6 @@ mod tests {
         assert!(!newer("1.0.0-rc.1", "1.0.0"));
         assert!(!newer("0.1.0", "0.1.0"));
         assert!(!newer("0.0.9", "0.1.0"));
-    }
-
-    #[test]
-    fn after_app_update_targets_latest_only_in_our_generation() {
-        let release = |version: &str, generation| CoreRelease { version: version.into(), generation };
-        let latest = release("0.1.13", Some(1));
-        assert_eq!(after_update_target("0.1.12", Some(&latest), 1, "0.1.11"), Some("0.1.13"));
-        for have in ["0.1.13", "0.1.14"] {
-            assert_eq!(after_update_target(have, Some(&latest), 1, "0.1.11"), Some("0.1.11"));
-        }
-        for latest in [None, Some(release("0.2.0", Some(2))), Some(release("0.1.13", None))] {
-            assert_eq!(after_update_target("0.1.12", latest.as_ref(), 1, "0.1.11"), Some("0.1.11"));
-            assert_eq!(after_update_target("0.1.4", latest.as_ref(), 1, "0.1.11"), None);
-        }
-        assert_eq!(after_update_target("0.1.4", Some(&latest), 1, "0.1.11"), None);
-        assert_eq!(after_update_target("0.1.5", Some(&latest), 1, "0.1.11"), Some("0.1.13"));
-        assert_eq!(after_update_target("0.1.5", None, 1, "0.1.11"), Some("0.1.11"));
     }
 
     #[test]

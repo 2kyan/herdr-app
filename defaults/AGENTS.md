@@ -633,12 +633,12 @@ What's about the user, never a look:
   precedence as fonts.
 - `appearance`: `"light"` or `"dark"` always; absent, the system's. A layout
   with a light and a dark theme shows the matching one.
-- Updates: an installed app downloads them by itself and offers Restart and
-  What changed. If the app crashes or is killed with a verified newer update
-  waiting, the next launch installs it before opening a window. The first
-  start after an app update also updates herdr-core
-  to the latest release of the same generation, keeping terminals running.
-  Settings → Updates keeps app and core actions together;
+- Updates: Settings → Updates checks only when you choose Check now. That
+  check can download a verified Herdr update; choose Restart to update to
+  install it. Herdr never checks, downloads or applies app updates in the
+  background, and never updates herdr-core automatically; choose Update
+  herdr-core when one is available. Settings → Updates keeps app and core
+  actions together;
   its What's new button opens the waiting update's release range, or this
   version's notes, in the What's new window. Reading never clears the waiting-update dot.
   Rare spotlight releases open What’s new after restart, once; otherwise a
@@ -688,9 +688,10 @@ What's about the user, never a look:
   `p` writes Linux primary selection. `s` is ignored; cut buffers `0`–`7`
   are treated as the system clipboard.
   Clipboard reads (`?`) are never allowed.
-- `telemetry`: `false` stops anonymous usage data and deletes what wasn't
-  sent (on when absent; Settings → Privacy shows each report word for
-  word, and `telemetry()` in mods). Once a day the app sends counts:
+- `telemetry`: `true` opts in to anonymous usage data; absent or `false` stops
+  collection and deletes what wasn't sent. It's off by default; Settings →
+  Privacy shows each report word for word, and `telemetry()` in mods. Once a
+  day the app sends counts:
   version, OS, which known agents ran, how many spaces, tabs and
   terminals, which layouts, shipped mods and commands were used. Never
   terminal content, names of files, folders, spaces or the person's own

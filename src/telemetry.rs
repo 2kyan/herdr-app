@@ -9,8 +9,8 @@
 //! and sends it. Nothing here may affect the app: it runs off the UI thread,
 //! never waits on anything, and every error just loses data.
 //!
-//! On unless settings.json says `"telemetry": false` (that also deletes the
-//! id and anything not sent yet). `DO_NOT_TRACK`, `HERDR_TELEMETRY=0` and CI
+//! Off unless settings.json explicitly says `"telemetry": true` (setting it
+//! off also deletes the id and anything not sent yet). `DO_NOT_TRACK`, `HERDR_TELEMETRY=0` and CI
 //! turn it off for one run. Only release builds (`HERDR_APP_RELEASE`) send,
 //! or a build pointed at a test server with `HERDR_TELEMETRY_URL`: a build
 //! from source and the sandbox collect and show, but never send.

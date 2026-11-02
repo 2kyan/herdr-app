@@ -123,7 +123,6 @@ pub fn started(first_install: bool) {
     let state = Launch::new(record, env!("CARGO_PKG_VERSION"), first_install);
     save(&state.record);
     *launch = Some(state);
-    std::thread::spawn(|| fetch_media(&all()));
 }
 
 pub fn cache(text: &str) {

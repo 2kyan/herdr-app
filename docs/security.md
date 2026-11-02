@@ -29,9 +29,8 @@ Remote connections use SSH through the core.
 
 ## Updates and signing
 
-Installed releases check the Herdr release service, download an update, and check its SHA-256 checksum against the release manifest before unpacking it.
-The app switches to the downloaded version on quit. Source builds do not update themselves.
-Core updates are handled separately by the core's updater.
+Installed releases contact the Herdr release service only after you choose Check now in Settings → Updates. That check may download an update and verify its SHA-256 checksum against the release manifest before unpacking it.
+The app switches to the downloaded version only after you choose Restart to update. It does not check, download or apply app updates in the background. Core updates are separate and happen only when you choose Update herdr-core. Source builds do not update themselves.
 
 A checksum from the same service detects a damaged download; it is not an independent signature on the manifest.
 The app does not verify a separate cryptographic signature on update manifests.
@@ -44,17 +43,17 @@ Do not assume every download is notarized or signed.
 
 ## Telemetry
 
-Usage telemetry is **on by default**. Release builds send a small daily report to `https://telemetry.herdr.dev/v1/report` with a random install ID.
+Usage telemetry is **off by default**. It is collected and sent only after explicit opt-in; release builds then send a small daily report to `https://telemetry.herdr.dev/v1/report` with a random install ID.
 Reports include app and core versions, OS and architecture, bucketed usage time and counts, known agent names, built-in layout names, mod counts, app command names, and fixed event counters.
 Custom layout names become `custom`; custom mod names are not sent.
 Terminal text, prompts, file contents, folder paths and free-text names are not included.
 
-Turn it off in **Settings → Privacy**. That page also lets you inspect the report.
+Turn it on in **Settings → Privacy** to opt in. That page also lets you inspect the report.
 Or set this field in your existing `settings.json`:
 
 ```json
 {
-  "telemetry": false
+  "telemetry": true
 }
 ```
 
@@ -62,7 +61,7 @@ Turning it off deletes the local install ID and unsent reports. It cannot recall
 For one run, set `DO_NOT_TRACK=1` or `HERDR_TELEMETRY=0`. CI environments disable collection too.
 Ordinary source builds collect locally while enabled but do not send, unless pointed at a test endpoint with `HERDR_TELEMETRY_URL`.
 
-Telemetry being off does not stop update checks, mod network requests or feedback you choose to send.
+Telemetry being off does not stop update checks you request, mod network requests or feedback you choose to send.
 Feedback is drafted for you to review and send, not sent silently.
 
 [Back to Herdr](../README.md)

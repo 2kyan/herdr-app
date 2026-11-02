@@ -719,7 +719,7 @@ export default class Settings extends View {
     const app = !u.app.updates
       ? ["A build from source: it updates with git, not here.", null]
       : u.app.ready
-        ? [`${u.app.ready} is ready. Restart to switch now; it also switches when you quit.`, primary("st-app-update", "Restart to update", () => run("app.update"))]
+        ? [`${u.app.ready} is ready. It won't be installed until you choose Restart to update.`, primary("st-app-update", "Restart to update", () => run("app.update"))]
         : [result, check("st-check-app")];
     const c = u.core;
     const core = c.managed
@@ -742,7 +742,7 @@ export default class Settings extends View {
       .child(div().h(18))
       .child(this.heading(t, "herdr-core"))
       .child(this.row(t, `herdr-core ${c.version ?? ""}`, core[0], core[1] ?? div()))
-      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Herdr looks for both every hour and tells you in the corner. herdr-core runs your terminals, so they keep running through its updates."));
+      .child(div().pt(12).text_size(12.5).line_height("18px").text_color(t.dim).child("Herdr checks for updates only when you choose Check now. A check may download a verified Herdr update; it is installed only when you choose Restart to update. herdr-core is never updated automatically; choose Update herdr-core when one is available."));
   }
 
 
@@ -773,7 +773,7 @@ export default class Settings extends View {
 
   privacy(t) {
     const s = telemetry();
-    const on = s ? s.setting : this.person.telemetry !== false;
+    const on = s ? s.setting : this.person.telemetry === true;
     const at = (secs) => new Date(secs * 1000).toLocaleString();
     const why = s?.off_because ? `Off for now: ${s.off_because} is set where Herdr started.` : null;
     const body = v_flex()
@@ -783,11 +783,11 @@ export default class Settings extends View {
         this.row(
           t,
           "Share anonymous usage data",
-          why ?? "Once a day: which agents and features you use, how many spaces and tabs, your system and Herdr's version. Never what's in your terminals, never names of files, folders or projects.",
+          why ?? "Off unless you turn it on. If enabled, once a day Herdr sends which agents and features you use, counts of spaces and tabs, and system, Herdr, and core versions. Never terminal content or names of files, folders or projects.",
           this.toggle(t, "st-telemetry", on, (_e, cx) =>
             this.change((p) => {
               if (on) p.telemetry = false;
-              else delete p.telemetry;
+              else p.telemetry = true;
             }, cx),
           ),
         ),
