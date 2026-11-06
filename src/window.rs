@@ -108,14 +108,29 @@ pub fn shell() -> String {
 }
 
 fn unix_agent_argv(sh: String, cmd: Vec<String>, login: bool) -> Vec<String> {
-    let fish = std::path::Path::new(&sh).file_name().and_then(|s| s.to_str()) == Some("fish");
-    let script = match (fish, login) {
-        (true, true) => "command $argv[2..]; exec $argv[1] -li",
-        (true, false) => "command $argv[2..]; exec $argv[1] -i",
-        (false, true) => "\"$@\"; exec \"$0\" -li",
-        (false, false) => "\"$@\"; exec \"$0\" -i",
+    let shell = std::path::Path::new(&sh).file_name().and_then(|s| s.to_str()).unwrap_or_default();
+    let fish = shell == "fish";
+    let csh = matches!(shell, "csh" | "tcsh");
+    let script = if csh {
+        // C-shell `-c` puts the command in argv[1], so cmd starts at argv[2].
+        // Array expansion otherwise splits arguments with spaces; :q keeps each
+        // value literal. It drops empty values, so emit those as `""` directly.
+        let args = cmd
+            .iter()
+            .enumerate()
+            .map(|(i, arg)| if arg.is_empty() { "\"\"".into() } else { format!("$argv[{}]:q", i + 2) })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("{args}; exec \"$0\" -{}i", if login { "l" } else { "" })
+    } else {
+        match (fish, login) {
+            (true, true) => "command $argv[2..]; exec $argv[1] -li".into(),
+            (true, false) => "command $argv[2..]; exec $argv[1] -i".into(),
+            (false, true) => "\"$@\"; exec \"$0\" -li".into(),
+            (false, false) => "\"$@\"; exec \"$0\" -i".into(),
+        }
     };
-    let mut run = vec![sh.clone(), if login { "-lic" } else { "-ic" }.into(), script.into(), sh];
+    let mut run = vec![sh.clone(), if login { "-lic" } else { "-ic" }.into(), script, sh];
     run.extend(cmd);
     run
 }
@@ -4982,21 +4997,58 @@ mod tests {
     fn agent_commands_keep_arguments_out_of_shell_source() {
         let cmd = vec!["agent".to_owned(), "a 'quoted' task; $(not-a-command)\nnext line".to_owned(), "".to_owned()];
         for login in [false, true] {
-            for sh in ["/bin/bash", "/bin/zsh", "/bin/sh", "/bin/dash", "/bin/fish"] {
+            for sh in ["/bin/bash", "/bin/zsh", "/bin/sh", "/bin/dash", "/bin/fish", "/bin/csh", "/bin/tcsh"] {
                 let run = super::unix_agent_argv(sh.into(), cmd.clone(), login);
                 assert_eq!(run[0], sh);
                 assert_eq!(run[1], if login { "-lic" } else { "-ic" });
                 assert_eq!(run[3], sh);
                 assert_eq!(run[4..], cmd);
-                let expected = match (sh.ends_with("/fish"), login) {
-                    (true, true) => "command $argv[2..]; exec $argv[1] -li",
-                    (true, false) => "command $argv[2..]; exec $argv[1] -i",
-                    (false, true) => "\"$@\"; exec \"$0\" -li",
-                    (false, false) => "\"$@\"; exec \"$0\" -i",
+                let expected = match (sh.rsplit('/').next().unwrap(), login) {
+                    ("fish", true) => "command $argv[2..]; exec $argv[1] -li".into(),
+                    ("fish", false) => "command $argv[2..]; exec $argv[1] -i".into(),
+                    ("csh" | "tcsh", login) => {
+                        let args = cmd
+                            .iter()
+                            .enumerate()
+                            .map(|(i, arg)| if arg.is_empty() { "\"\"".into() } else { format!("$argv[{}]:q", i + 2) })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        format!("{args}; exec \"$0\" -{}i", if login { "l" } else { "" })
+                    }
+                    (_, true) => "\"$@\"; exec \"$0\" -li".into(),
+                    (_, false) => "\"$@\"; exec \"$0\" -i".into(),
                 };
                 assert_eq!(run[2], expected);
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tcsh_agent_launcher_preserves_arguments_and_keeps_the_shell_open() {
+        if std::process::Command::new("tcsh").arg("-f").arg("-c").arg("exit 0").output().is_err() {
+            return;
+        }
+        let cmd = [
+            "/usr/bin/printf",
+            "<%s>\\n",
+            "a 'quoted' task; $(not-a-command)\nnext line",
+            "",
+            "x;y",
+        ].map(String::from);
+        let run = super::unix_agent_argv("/bin/tcsh".into(), cmd.to_vec(), false);
+        let script = run[2].replace("exec \"$0\" -i", "echo launcher-kept");
+        let out = std::process::Command::new("tcsh")
+            .args(["-f", "-c", &script])
+            .args(&run[3..])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "<a 'quoted' task; $(not-a-command)\nnext line>\n<>\n<x;y>\nlauncher-kept\n",
+            "tcsh stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[test]

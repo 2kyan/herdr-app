@@ -103,7 +103,7 @@ pub fn installed(commands: &[String], on: Option<&str>) -> Vec<String> {
         }
         None => {
             let shell = crate::window::shell();
-            let line = installed_line(commands, base(&shell) == "fish");
+            let line = installed_line(commands, &shell);
             crate::mods::run_here(&shell, &["-ic".into(), line]).unwrap_or_default()
         }
     };
@@ -111,17 +111,53 @@ pub fn installed(commands: &[String], on: Option<&str>) -> Vec<String> {
     commands.iter().filter(|c| found.contains(c.as_str())).cloned().collect()
 }
 
-/// Check in the shell itself for functions, but not aliases (`"$@"` cannot run them).
-fn installed_line(commands: &[String], fish: bool) -> String {
+/// Check in the shell itself for commands, functions and builtins, but not aliases.
+fn installed_line(commands: &[String], shell: &str) -> String {
+    let shell = base(shell);
     commands
         .iter()
-        .map(|c| {
-            let word = format!("'{}'", c.replace('\'', "'\\''"));
-            let unalias = if fish { String::new() } else { format!("unalias -- {word} 2>/dev/null; ") };
-            format!("{unalias}command -v {word} >/dev/null 2>&1 && printf 'herdr-has:%s\\n' {word};")
+        .map(|c| match shell {
+            "csh" | "tcsh" => csh_installed_command(c),
+            _ => posix_installed_command(c, shell == "fish"),
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// csh/tcsh use different redirection, lookup and quoting syntax from POSIX shells.
+fn csh_installed_command(command: &str) -> String {
+    let word = csh_quote(command);
+    let marker = csh_quote(&format!("herdr-has:{command}"));
+    // `where` also reports aliases, so remove a same-named alias before testing.
+    format!(
+        "unalias {word} >& /dev/null; where {word} >& /dev/null; if ( $status == 0 ) echo {marker};"
+    )
+}
+
+fn csh_quote(word: &str) -> String {
+    let mut quoted = String::with_capacity(word.len() + 2);
+    quoted.push('"');
+    // A quoted word still expands these characters in csh unless escaped.
+    for ch in word.chars() {
+        if matches!(ch, '\\' | '"' | '$' | '`' | '!') {
+            quoted.push('\\');
+        }
+        quoted.push(ch);
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// POSIX shells (and fish, which accepts this command/printf syntax) can
+/// inspect the command directly. Alias removal is needed only outside fish.
+fn posix_installed_command(command: &str, fish: bool) -> String {
+    let word = format!("'{}'", command.replace('\'', "'\\''"));
+    let unalias = if fish {
+        String::new()
+    } else {
+        format!("unalias -- {word} 2>/dev/null; ")
+    };
+    format!("{unalias}command -v {word} >/dev/null 2>&1 && printf 'herdr-has:%s\\n' {word};")
 }
 
 thread_local! {
@@ -375,12 +411,28 @@ mod tests {
     #[test]
     fn installed_checks_functions_and_quoted_names_but_not_aliases() {
         let commands = ["issue57_function", "issue57_alias", "printf", "missing'command; false"].map(String::from);
-        let line = installed_line(&commands, false);
+        let line = installed_line(&commands, "sh");
         let out = std::process::Command::new("sh")
             .args(["-c", &format!("issue57_function() {{ :; }}; alias issue57_alias='printf alias'; {line}")])
             .output()
             .unwrap();
         assert_eq!(String::from_utf8(out.stdout).unwrap(), "herdr-has:issue57_function\nherdr-has:printf\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_checks_commands_in_csh_without_accepting_aliases() {
+        if std::process::Command::new("tcsh").arg("-f").arg("-c").arg("exit 0").output().is_err() {
+            return;
+        }
+        let commands = ["printf", "issue57_alias", "missing'command; false"].map(String::from);
+        let line = installed_line(&commands, "tcsh");
+        assert_eq!(line, installed_line(&commands, "csh"));
+        let out = std::process::Command::new("tcsh")
+            .args(["-f", "-c", &format!("alias issue57_alias 'echo alias'; {line}")])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), "herdr-has:printf\n");
     }
 
     #[test]
